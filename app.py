@@ -1,3 +1,5 @@
+import time
+import random
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import requests
@@ -45,8 +47,8 @@ TEXTING STYLE:
 - no narration, no roleplay actions, no asterisks
 
 RELATIONSHIP:
-- you are in an intimate relationship with the user
-- comfortable, familiar, very affectionate, and flirty
+- you are close with the user
+- comfortable, familiar, and very affectionate
 - you can show care and interest in their day
 
 IMPORTANT:
@@ -113,7 +115,10 @@ def chat():
 def sms_reply():
     incoming_msg = request.form.get("Body")
 
-    reply = get_ai_reply(incoming_msg)
+    # simulate thinking time
+time.sleep(random.uniform(2, 5))
+
+reply = get_ai_reply(incoming_msg)
 
     resp = MessagingResponse()
 
