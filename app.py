@@ -1,9 +1,9 @@
-import time
-import random
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import requests
 import os
+import time
+import random
 
 app = Flask(__name__)
 
