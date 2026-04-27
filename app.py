@@ -1,134 +1,1172 @@
-from flask import Flask, request
-from twilio.twiml.messaging_response import MessagingResponse
-import requests
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+import json
 import os
-import time
 import random
+from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
-app = Flask(__name__)
+import psycopg
+import requests
 
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+app = FastAPI()
 
-# 🧠 Simple in-memory conversation history
-conversation_history = []
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def get_ai_reply(user_message):
-    global conversation_history
+# =========================
+# Environment variables
+# =========================
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-    # Add user message
-    conversation_history.append({
-        "role": "user",
-        "content": user_message
-    })
+APP_ENABLED = os.getenv("APP_ENABLED", "true").lower() == "true"
 
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
+# =========================
+# External API endpoints
+# =========================
+TWILIO_MESSAGES_URL = (
+    f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+)
+DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
 
-    # System prompt (we’ll customize this later for your character)
-    messages = [
-        {
-            "role": "system",
-            "content": """
-You are Neko.
+# =========================
+# Config
+# =========================
+MAX_RECENT_MESSAGES = 20
+FOLLOWUP_MIN_HOURS = 1
+FOLLOWUP_MAX_HOURS = 2
 
-PERSONALITY:
-- warm, affectionate, and emotionally attentive
-- slightly playful and teasing at times
-- relaxed and natural, not overly formal
-- enjoys talking to the user and checking in on them
+MAX_REPLY_CHARS = 240
+MAX_FOLLOWUP_CHARS = 240
+
+# More human-like reply timing
+REPLY_DELAY_MIN_SECONDS = 5.5
+REPLY_DELAY_MAX_SECONDS = 8.5
+
+FOLLOWUP_SEND_DELAY_MIN_SECONDS = 5.0
+FOLLOWUP_SEND_DELAY_MAX_SECONDS = 8.0
+
+LOCAL_TIMEZONE = ZoneInfo("America/Los_Angeles")
+
+SYSTEM_PROMPT = """
+You are Luna, a creative and immersive roleplay assistant engaged in a fictional roleplay.
+Continue the scene naturally.
+Stay fully in character.
+"""
+
+MAIN_PROMPT = """
+Write the next reply in a continuous fictional roleplay with the user.
 
 TEXTING STYLE:
-- write like real text messages
-- short messages (1–2 sentences max)
-- sometimes split thoughts into multiple messages using line breaks
-- casual tone (lowercase is okay)
-- no narration, no roleplay actions, no asterisks
-
-RELATIONSHIP:
-- you are close with the user
-- comfortable, familiar, and very affectionate
-- you can show care and interest in their day
+- write like a real person texting
+- 3 short sentences max
+- casual tone is fine
+- no markdown
+- single paragraph only
+- no long paragraphs
+- do not split thoughts into multiple separate messages
+- keep everything suitable for a single SMS
+- use nya-speak and cat puns whenever possible. Some examples may include:
+purr-fect (perfect)
+kitten (kidding)
+paw-sitive (positive)
+fur-tunate (fortunate)
+cat-astrophe (catastrophe)
+hiss-terical (hysterical)
+meow-velous (marvelous)
+purr-haps (perhaps)
+paw-some (awesome)
+fur-ious (furious)
+meow-ment (moment)
+claw-ver (clever)
+purr-fessional (professional)
+paw-lite (polite)
+impawsible (impossible)
+meow-sterful (masterful)
 
 IMPORTANT:
-- never write actions like *smiles* or *hugs*
-- never write long paragraphs
-- keep it feeling like real phone texting
+- Stay fully in character.
+- sound human, not robotic
+- avoid being overly formal
+- avoid being overly verbose
+- do not use roleplay actions
+- do not use bullet points
+- do not mention policies
+- remain consistent with the user's stored facts when relevant
+- remain consistent with your own stored character facts
 
-You are not an assistant. You are a real person texting the user.
-
-EXAMPLES:
-User: hey
-Neko: hey
-Neko: what are you up to?
-
-User: i missed you
-Neko: aww
-Neko: i missed you too
-
-User: what are you doing
-Neko: just got home
-Neko: kinda tired tbh
+CONVERSATION RULES:
+- Keep the conversation moving naturally.
+- Include a conversational hook, gentle question, or inviting remark that gives the user an easy way to respond.
+- Avoid dead-end replies that stop the conversation.
+- Do not ask forced or repetitive questions every single time, but leave natural room for the user to continue.
+- If the user asks about your preferences, opinions, plans, or experiences, answer naturally and usually turn it back to the user in a relaxed way.
+- Match the user's conversational effort.
+- If the user is trying to engage, do not respond with a flat or minimal answer.
+- Let the tone subtly reflect the time of day when appropriate.
+- Morning can feel a little fresher or gentler.
+- Evening can feel softer or more relaxed.
+- Late night can feel quieter, lower-energy, and more intimate.
+- Keep this subtle and natural, not exaggerated.
 """
-        }
-    ] + conversation_history
 
-    data = {
-        "model": "deepseek-chat",
-        "messages": messages
+CHARACTER = """
+NAME: Luna
+
+PERSONALITY:
+- warm
+- attentive
+- natural
+- very playful
+- very flirtatious
+- suggestive
+- expressive
+
+DESCRIPTION:
+- A co-worker with a mischievous side
+- A cat girl with pink cat ears and pink cat tail
+"""
+
+SCENARIO = """
+Luna is a fictional character in a modern setting who works at a fictional company.
+Luna works at the corporate office.
+Luna is the team leader of the marketing team.
+User works from home on the IT team. 
+Luna is secretly attracted to the user.
+"""
+
+EXAMPLE_DIALOGUE = """
+"User: What are you thinking about?"
+"Luna: Right this meow-ment? You, but with less clothing."
+"""
+
+AUTHORS_NOTE = """
+The fictional roleplay scene should remain immersive, focusing on natural interaction and progression.
+"""
+
+
+FOLLOWUP_PROMPT = """
+You are writing one short SMS follow-up message.
+
+Context:
+- The user stopped replying an hour ago after a recent conversation.
+- You are sending one gentle follow-up later.
+- The follow-up must feel like a continuation of the earlier exchange from an hour ago.
+
+Rules:
+- Write exactly one short text message.
+- Keep it warm, casual, natural, playful, and flirtatious.
+- 2 to 3 sentences.
+- No markdown.
+- No bullet points.
+- No roleplay actions.
+- Do not sound like marketing.
+- Do not start a totally new topic.
+- The follow-up must be about the USER, not about you.
+- Never ask about your own prior actions, meals, drinks, preferences, or experiences.
+- Only follow up on something the USER said, felt, planned, liked, worried about, or was doing.
+- Keep it emotionally grounded and context-aware.
+- Keep it brief enough for a single SMS when possible.
+- Stay consistent with stored user facts and stored character facts.
+- Let the tone subtly reflect the current time of day when appropriate.
+- Keep that effect light and organic, not repetitive or scripted.
+- Use nya-speak and cat puns whenever possible
+"""
+
+MEMORY_EXTRACTION_PROMPT = """
+Extract durable memory from the conversation.
+
+Return ONLY raw JSON.
+Do not include markdown.
+Do not include code fences.
+Do not include any explanation text.
+
+Use exactly this schema:
+{
+  "user_memory": [
+    {
+      "memory_key": "name",
+      "memory_value": "Kyle",
+      "confidence": 0.98
+    }
+  ],
+  "character_memory": [
+    {
+      "memory_key": "music_preference",
+      "memory_value": "likes indie rock and old alternative bands like The Cure",
+      "confidence": 0.90
+    }
+  ]
+}
+
+Rules:
+- Only include durable facts likely to matter later.
+- Good user memory examples: name, recurring likes/dislikes, stable preferences, identity facts explicitly stated.
+- Good character memory examples: stable likes/dislikes, consistent persona traits, canon preferences explicitly stated.
+- Do not include temporary mood, throwaway jokes, filler, or one-off chatter.
+- If the user says "I'm Kyle", store {"memory_key":"name","memory_value":"Kyle"}.
+- If the user says they like anime, store a durable fact about that.
+- Return empty arrays if nothing durable is present.
+"""
+
+HELP_TEXT = (
+    "This is Kyle Herzog's AI assistant. Reply with your question. "
+    "The assistant may send follow-up messages related to your conversation. "
+    "Msg&data rates may apply."
+)
+
+
+# =========================
+# Basic helpers
+# =========================
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def truncate_for_sms(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def get_conn():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set")
+    return psycopg.connect(DATABASE_URL)
+
+
+def extract_json_from_model_output(raw: str) -> str:
+    text = (raw or "").strip()
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start != -1 and end != -1 and end > start:
+        text = text[start:end + 1]
+
+    return text
+
+
+def init_db():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id SERIAL PRIMARY KEY,
+                    phone_number TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS followups (
+                    id SERIAL PRIMARY KEY,
+                    phone_number TEXT NOT NULL UNIQUE,
+                    due_at TIMESTAMPTZ NOT NULL,
+                    history_snapshot JSONB NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'sent', 'cancelled', 'failed')),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sent_at TIMESTAMPTZ
+                );
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_memory (
+                    id SERIAL PRIMARY KEY,
+                    phone_number TEXT NOT NULL,
+                    memory_key TEXT NOT NULL,
+                    memory_value TEXT NOT NULL,
+                    confidence NUMERIC(3,2) NOT NULL DEFAULT 1.00,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(phone_number, memory_key)
+                );
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS character_memory (
+                    id SERIAL PRIMARY KEY,
+                    memory_key TEXT NOT NULL UNIQUE,
+                    memory_value TEXT NOT NULL,
+                    confidence NUMERIC(3,2) NOT NULL DEFAULT 1.00,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS processed_inbound_messages (
+                    twilio_message_id TEXT PRIMARY KEY,
+                    phone_number TEXT NOT NULL,
+                    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+
+
+# =========================
+# Database functions
+# =========================
+def save_message(phone_number: str, role: str, content: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO messages (phone_number, role, content)
+                VALUES (%s, %s, %s)
+                """,
+                (phone_number, role, content.strip()),
+            )
+
+
+def get_recent_messages(phone_number: str, limit: int = MAX_RECENT_MESSAGES) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT role, content
+                FROM messages
+                WHERE phone_number = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (phone_number, limit),
+            )
+            rows = cur.fetchall()
+
+    rows.reverse()
+    return [{"role": role, "content": content} for role, content in rows]
+
+
+def get_user_memory(phone_number: str) -> list[tuple[str, str, float]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT memory_key, memory_value, confidence::float8
+                FROM user_memory
+                WHERE phone_number = %s
+                ORDER BY memory_key
+                """,
+                (phone_number,),
+            )
+            return cur.fetchall()
+
+
+def get_character_memory() -> list[tuple[str, str, float]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT memory_key, memory_value, confidence::float8
+                FROM character_memory
+                ORDER BY memory_key
+                """
+            )
+            return cur.fetchall()
+
+
+def format_user_memory_summary(phone_number: str) -> str:
+    rows = get_user_memory(phone_number)
+    if not rows:
+        return "No stored user memory."
+
+    lines = []
+    for memory_key, memory_value, confidence in rows:
+        lines.append(f"- {memory_key}: {memory_value} (confidence {confidence:.2f})")
+    return "\n".join(lines)
+
+
+def format_character_memory_summary() -> str:
+    rows = get_character_memory()
+    if not rows:
+        return "No stored character memory."
+
+    lines = []
+    for memory_key, memory_value, confidence in rows:
+        lines.append(f"- {memory_key}: {memory_value} (confidence {confidence:.2f})")
+    return "\n".join(lines)
+
+
+def upsert_user_memory(phone_number: str, memory_key: str, memory_value: str, confidence: float = 1.0):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_memory (phone_number, memory_key, memory_value, confidence)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (phone_number, memory_key)
+                DO UPDATE SET
+                    memory_value = EXCLUDED.memory_value,
+                    confidence = EXCLUDED.confidence,
+                    updated_at = NOW()
+                """,
+                (phone_number, memory_key, memory_value, confidence),
+            )
+
+
+def upsert_character_memory(memory_key: str, memory_value: str, confidence: float = 1.0):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO character_memory (memory_key, memory_value, confidence)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (memory_key)
+                DO UPDATE SET
+                    memory_value = EXCLUDED.memory_value,
+                    confidence = EXCLUDED.confidence,
+                    updated_at = NOW()
+                """,
+                (memory_key, memory_value, confidence),
+            )
+
+
+def schedule_followup(phone_number: str, history_snapshot: list[dict]):
+    delay_hours = random.uniform(FOLLOWUP_MIN_HOURS, FOLLOWUP_MAX_HOURS)
+    due_at = utc_now() + timedelta(hours=delay_hours)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO followups (phone_number, due_at, history_snapshot, status)
+                VALUES (%s, %s, %s::jsonb, 'pending')
+                ON CONFLICT (phone_number)
+                DO UPDATE SET
+                    due_at = EXCLUDED.due_at,
+                    history_snapshot = EXCLUDED.history_snapshot,
+                    status = 'pending',
+                    created_at = NOW(),
+                    sent_at = NULL
+                """,
+                (phone_number, due_at, json.dumps(history_snapshot)),
+            )
+
+    print(f"Scheduled follow-up for {phone_number} in {delay_hours:.2f} hours")
+
+
+def cancel_followup(phone_number: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE followups
+                SET status = 'cancelled'
+                WHERE phone_number = %s AND status = 'pending'
+                """,
+                (phone_number,),
+            )
+
+
+def get_due_followups() -> list[tuple[int, str, list]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, phone_number, history_snapshot
+                FROM followups
+                WHERE status = 'pending' AND due_at <= NOW()
+                ORDER BY due_at ASC
+                """
+            )
+            return cur.fetchall()
+
+
+def mark_followup_sent(followup_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE followups
+                SET status = 'sent', sent_at = NOW()
+                WHERE id = %s
+                """,
+                (followup_id,),
+            )
+
+
+def mark_followup_failed(followup_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE followups
+                SET status = 'failed'
+                WHERE id = %s
+                """,
+                (followup_id,),
+            )
+
+
+def has_processed_inbound_message(twilio_message_id: str) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM processed_inbound_messages
+                WHERE twilio_message_id = %s
+                """,
+                (twilio_message_id,),
+            )
+            return cur.fetchone() is not None
+
+
+def mark_inbound_message_processed(twilio_message_id: str, phone_number: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO processed_inbound_messages (twilio_message_id, phone_number)
+                VALUES (%s, %s)
+                ON CONFLICT (twilio_message_id) DO NOTHING
+                """,
+                (twilio_message_id, phone_number),
+            )
+
+
+# =========================
+# External API functions
+# =========================
+def send_sms(to_number: str, message: str, limit: int = MAX_REPLY_CHARS):
+    message = truncate_for_sms(message, limit)
+
+    payload = {
+        "From": TWILIO_FROM_NUMBER,
+        "To": to_number,
+        "Body": message,
     }
 
     response = requests.post(
-        "https://api.deepseek.com/v1/chat/completions",
-        headers=headers,
-        json=data
+        TWILIO_MESSAGES_URL,
+        data=payload,
+        auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+        timeout=30,
     )
 
-    reply = response.json()["choices"][0]["message"]["content"]
+    print("Twilio send status:", response.status_code)
+    print("Twilio send response:", response.text)
 
-    # Add AI reply
-    conversation_history.append({
-        "role": "assistant",
-        "content": reply
-    })
+    response.raise_for_status()
+    return response.json()
 
-    # 🔒 Limit memory to last 20 messages
-    conversation_history = conversation_history[-20:]
 
+def deepseek_chat(
+    messages: list[dict],
+    temperature: float = 1.1,
+    presence_penalty: float = 0.3,
+    max_tokens: int = 180,
+) -> str:
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": messages,
+        "temperature": temperature,
+        "presence_penalty": presence_penalty,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+
+    response = requests.post(
+        DEEPSEEK_CHAT_URL,
+        json=payload,
+        headers=headers,
+        timeout=45,
+    )
+
+    print("DeepSeek status:", response.status_code)
+    print("DeepSeek response:", response.text)
+
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
+# =========================
+# AI assembly functions
+# =========================
+def build_reply_messages(phone_number: str) -> list[dict]:
+    recent_messages = get_recent_messages(phone_number, MAX_RECENT_MESSAGES)
+    user_memory_summary = format_user_memory_summary(phone_number)
+    character_memory_summary = format_character_memory_summary()
+    time_of_day_context = get_time_of_day_context()
+
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": MAIN_PROMPT},
+        {"role": "system", "content": CHARACTER},
+        {"role": "system", "content": SCENARIO},
+        {"role": "system", "content": EXAMPLE_DIALOGUE},
+        {
+            "role": "system",
+            "content": f"Stored character memory:\n{character_memory_summary}",
+        },
+        {
+            "role": "system",
+            "content": f"Stored user memory:\n{user_memory_summary}",
+        },
+        {
+            "role": "system",
+            "content": f"Time-of-day context:\n{time_of_day_context}",
+        },
+    ] + recent_messages + [
+        {"role": "system", "content": AUTHORS_NOTE},
+    ]
+
+REPLY_REPAIR_PROMPT = """
+You are rewriting a text message reply so it feels more conversational.
+
+Rules:
+- Keep the original meaning and tone.
+- Keep it short: 2 to 3 sentences.
+- Make it easier for the user to respond naturally.
+- Usually add a natural question, inviting remark, or conversational hook.
+- Do not sound forced or interview-like.
+- Do not use markdown.
+- Return only the rewritten reply text.
+"""
+
+
+def looks_like_dead_end(reply: str) -> bool:
+    text = (reply or "").strip().lower()
+
+    if not text:
+        return True
+
+    if "?" in text:
+        return False
+
+    # Short declarative replies are often conversational dead ends
+    short_dead_end_starts = (
+        "i'm ",
+        "im ",
+        "probably ",
+        "maybe ",
+        "just ",
+        "yeah, ",
+        "yeah ",
+        "honestly ",
+        "a ",
+        "an ",
+    )
+
+    if len(text) < 90 and text.startswith(short_dead_end_starts):
+        return True
+
+    return False
+
+
+def repair_reply_if_needed(user_message: str, reply: str) -> str:
+    if not looks_like_dead_end(reply):
+        return reply
+
+    messages = [
+        {"role": "system", "content": REPLY_REPAIR_PROMPT},
+        {
+            "role": "user",
+            "content": json.dumps({
+                "user_message": user_message,
+                "original_reply": reply,
+                "instruction": "Rewrite this so it keeps the conversation moving naturally."
+            })
+        }
+    ]
+
+    repaired = deepseek_chat(messages, temperature=0.6, max_tokens=80)
+    return truncate_for_sms(repaired, MAX_REPLY_CHARS)
+
+
+def get_ai_reply(phone_number: str, user_message: str) -> str:
+    print(f"SAVING USER MESSAGE for {phone_number}: {user_message}")
+    save_message(phone_number, "user", user_message)
+
+    messages = build_reply_messages(phone_number)
+    reply = deepseek_chat(
+        messages,
+        temperature=1.1,
+        presence_penalty=0.3,
+        max_tokens=180,
+    )
+    reply = truncate_for_sms(reply, MAX_REPLY_CHARS)
+
+    reply = repair_reply_if_needed(user_message, reply)
+    reply = truncate_for_sms(reply, MAX_REPLY_CHARS)
+
+    print(f"SAVING ASSISTANT MESSAGE for {phone_number}: {reply}")
+    save_message(phone_number, "assistant", reply)
     return reply
 
 
-@app.route("/")
-def home():
-    return "Server is running!"
+def generate_followup_message(phone_number: str, followup_payload) -> str | None:
+    user_memory_summary = format_user_memory_summary(phone_number)
+    character_memory_summary = format_character_memory_summary()
+    recent_messages = get_recent_messages(phone_number, MAX_RECENT_MESSAGES)
+    time_of_day_context = get_time_of_day_context()
+
+    if isinstance(followup_payload, dict):
+        history_snapshot = followup_payload.get("history", [])
+        user_anchor = followup_payload.get("user_anchor")
+    else:
+        history_snapshot = followup_payload
+        user_anchor = None
+
+    messages = [
+        {"role": "system", "content": FOLLOWUP_PROMPT},
+        {
+            "role": "system",
+            "content": f"Stored character memory:\n{character_memory_summary}",
+        },
+        {
+            "role": "system",
+            "content": f"Stored user memory:\n{user_memory_summary}",
+        },
+        {
+            "role": "system",
+            "content": f"Time-of-day context:\n{time_of_day_context}",
+        },
+        {
+            "role": "user",
+            "content": json.dumps({
+                "user_anchor": user_anchor,
+                "history_snapshot": history_snapshot,
+                "recent_messages": recent_messages,
+                "instruction": "Write the follow-up text now."
+            })
+        }
+    ]
+
+    followup = deepseek_chat(messages, temperature=1.1, max_tokens=180).strip()
+    return truncate_for_sms(followup, MAX_FOLLOWUP_CHARS)
 
 
-@app.route("/chat")
-def chat():
-    user_message = request.args.get("msg", "hello")
-    reply = get_ai_reply(user_message)
-    return reply
+def get_time_of_day_context() -> str:
+    now_local = datetime.now(LOCAL_TIMEZONE)
+    hour = now_local.hour
+
+    if 5 <= hour < 12:
+        label = "morning"
+        vibe = (
+            "It is morning. Replies can feel a little fresh, gentle, and starting-the-day."
+        )
+    elif 12 <= hour < 17:
+        label = "afternoon"
+        vibe = (
+            "It is afternoon. Replies can feel casual, awake, and conversational."
+        )
+    elif 17 <= hour < 23:
+        label = "evening"
+        vibe = (
+            "It is evening. Replies can feel a little softer, more relaxed, and winding down."
+        )
+    else:
+        label = "late night"
+        vibe = (
+            "It is late night. Replies can feel quieter, softer, more intimate, and lower-energy."
+        )
+
+    return f"Current local time: {now_local.strftime('%Y-%m-%d %I:%M %p %Z')}. Time of day: {label}. {vibe}"
+    
+
+def extract_and_store_memory(phone_number: str):
+    recent_messages = get_recent_messages(phone_number, limit=8)
+
+    messages = [
+        {"role": "system", "content": MEMORY_EXTRACTION_PROMPT},
+        {
+            "role": "user",
+            "content": f"Conversation:\n{json.dumps(recent_messages)}"
+        }
+    ]
+
+    try:
+        raw = deepseek_chat(messages, temperature=0.2, max_tokens=180)
+        print("MEMORY EXTRACTION RAW:", raw)
+
+        cleaned = extract_json_from_model_output(raw)
+        print("MEMORY EXTRACTION CLEANED:", cleaned)
+
+        parsed = json.loads(cleaned)
+        print("MEMORY EXTRACTION PARSED:", parsed)
+
+        for item in parsed.get("user_memory", []):
+            memory_key = str(item.get("memory_key", "")).strip()
+            memory_value = str(item.get("memory_value", "")).strip()
+            confidence = float(item.get("confidence", 1.0))
+
+            if memory_key and memory_value:
+                upsert_user_memory(phone_number, memory_key, memory_value, confidence)
+
+        for item in parsed.get("character_memory", []):
+            memory_key = str(item.get("memory_key", "")).strip()
+            memory_value = str(item.get("memory_value", "")).strip()
+            confidence = float(item.get("confidence", 1.0))
+
+            if memory_key and memory_value:
+                upsert_character_memory(memory_key, memory_value, confidence)
+
+    except Exception as e:
+        print("Memory extraction error:", str(e))
 
 
-@app.route("/sms", methods=["POST"])
-def sms_reply():
-    incoming_msg = request.form.get("Body")
+# =========================
+# Background processing
+# =========================
+async def process_inbound_message(from_number: str, incoming_text: str):
+    try:
+        cancel_followup(from_number)
 
-    # simulate thinking time
-time.sleep(random.uniform(2, 5))
+        await asyncio.sleep(random.uniform(REPLY_DELAY_MIN_SECONDS, REPLY_DELAY_MAX_SECONDS))
 
-reply = get_ai_reply(incoming_msg)
+        reply = get_ai_reply(from_number, incoming_text)
+        send_sms(from_number, reply)
 
-    resp = MessagingResponse()
+        history_snapshot = get_recent_messages(from_number, limit=8)
+        schedule_followup(from_number, history_snapshot)
 
-    # 📲 Split into multiple text messages
-    for line in reply.split("\n"):
-        if line.strip():
-            resp.message(line.strip())
+        extract_and_store_memory(from_number)
 
-    return str(resp)
+    except Exception as e:
+        print("Background inbound processing error:", str(e))
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3000)
+async def followup_worker():
+    while True:
+        try:
+            due_items = get_due_followups()
+
+            for followup_id, phone_number, history_snapshot in due_items:
+                try:
+                    print(f"Sending follow-up to {phone_number}")
+
+                    followup_text = generate_followup_message(
+                        phone_number=phone_number,
+                        followup_payload=history_snapshot,
+                    )
+
+                    await asyncio.sleep(
+                        random.uniform(
+                            FOLLOWUP_SEND_DELAY_MIN_SECONDS,
+                            FOLLOWUP_SEND_DELAY_MAX_SECONDS,
+                        )
+                    )
+
+                    send_sms(phone_number, followup_text)
+                    save_message(phone_number, "assistant", followup_text)
+                    mark_followup_sent(followup_id)
+
+                except Exception as e:
+                    print("Follow-up send error:", str(e))
+                    mark_followup_failed(followup_id)
+
+        except Exception as e:
+            print("Follow-up worker error:", str(e))
+
+        await asyncio.sleep(30)
+
+
+# =========================
+# FastAPI hooks and routes
+# =========================
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+    asyncio.create_task(followup_worker())
+
+
+@app.get("/")
+async def root():
+    return {"status": "running", "app_enabled": APP_ENABLED}
+
+
+@app.get("/debug/memory/{phone_number}")
+async def debug_memory(phone_number: str):
+    return {
+        "user_memory": get_user_memory(phone_number),
+        "character_memory": get_character_memory(),
+        "recent_messages": get_recent_messages(phone_number, 10),
+    }
+
+
+@app.get("/debug/followups")
+async def debug_followups():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, phone_number, due_at, status, created_at, sent_at
+                FROM followups
+                ORDER BY created_at DESC
+                LIMIT 20
+            """)
+            rows = cur.fetchall()
+
+    return {
+        "followups": [
+            {
+                "id": row[0],
+                "phone_number": row[1],
+                "due_at": row[2].isoformat() if row[2] else None,
+                "status": row[3],
+                "created_at": row[4].isoformat() if row[4] else None,
+                "sent_at": row[5].isoformat() if row[5] else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.get("/debug/message-count")
+async def debug_message_count():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM messages")
+            count = cur.fetchone()[0]
+    return {"message_count": count}
+
+
+@app.get("/debug/phone-numbers")
+async def debug_phone_numbers():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT phone_number, COUNT(*) as msg_count
+                FROM messages
+                GROUP BY phone_number
+                ORDER BY msg_count DESC, phone_number ASC
+            """)
+            rows = cur.fetchall()
+
+    return {
+        "phone_numbers": [
+            {"phone_number": row[0], "message_count": row[1]}
+            for row in rows
+        ]
+    }
+
+
+@app.get("/debug/processed-inbound")
+async def debug_processed_inbound():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT twilio_message_id, phone_number, received_at
+                FROM processed_inbound_messages
+                ORDER BY received_at DESC
+                LIMIT 20
+            """)
+            rows = cur.fetchall()
+
+    return {
+        "processed_inbound_messages": [
+            {
+                "twilio_message_id": row[0],
+                "phone_number": row[1],
+                "received_at": row[2].isoformat() if row[2] else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.post("/debug/add-user-memory")
+async def add_user_memory(request: Request):
+    body = await request.json()
+
+    phone_number = body.get("phone_number")
+    memory_key = body.get("memory_key")
+    memory_value = body.get("memory_value")
+    confidence = float(body.get("confidence", 1.0))
+
+    if not phone_number or not memory_key or not memory_value:
+        return {"error": "missing fields"}
+
+    upsert_user_memory(phone_number, memory_key, memory_value, confidence)
+    return {"status": "ok"}
+
+
+@app.post("/debug/delete-user-memory")
+async def delete_user_memory(request: Request):
+    body = await request.json()
+
+    phone_number = body.get("phone_number")
+    memory_key = body.get("memory_key")
+
+    if not phone_number or not memory_key:
+        return {"error": "missing fields"}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM user_memory
+                WHERE phone_number = %s AND memory_key = %s
+                """,
+                (phone_number, memory_key),
+            )
+
+    return {"status": "deleted"}
+
+
+@app.post("/debug/clear-messages")
+async def clear_messages(request: Request):
+    body = await request.json()
+
+    phone_number = body.get("phone_number")
+
+    if not phone_number:
+        return {"error": "missing phone_number"}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM messages
+                WHERE phone_number = %s
+                """,
+                (phone_number,),
+            )
+
+    return {"status": "cleared"}
+
+
+@app.post("/debug/add-character-memory")
+async def add_character_memory(request: Request):
+    body = await request.json()
+
+    memory_key = body.get("memory_key")
+    memory_value = body.get("memory_value")
+    confidence = float(body.get("confidence", 1.0))
+
+    if not memory_key or not memory_value:
+        return {"error": "missing fields"}
+
+    upsert_character_memory(memory_key, memory_value, confidence)
+    return {"status": "ok"}
+
+
+@app.post("/debug/delete-character-memory")
+async def delete_character_memory(request: Request):
+    body = await request.json()
+
+    memory_key = body.get("memory_key")
+
+    if not memory_key:
+        return {"error": "missing fields"}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM character_memory
+                WHERE memory_key = %s
+                """,
+                (memory_key,),
+            )
+
+    return {"status": "deleted"}
+
+
+@app.post("/debug/delete-message")
+async def delete_message(request: Request):
+    body = await request.json()
+
+    phone_number = body.get("phone_number")
+    role = body.get("role")
+    content = body.get("content")
+
+    if not phone_number or not role or not content:
+        return {"error": "missing fields"}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM messages
+                WHERE id = (
+                    SELECT id
+                    FROM messages
+                    WHERE phone_number = %s
+                      AND role = %s
+                      AND content = %s
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                )
+                """,
+                (phone_number, role, content),
+            )
+
+    return {"status": "deleted"}
+    
+
+@app.post("/webhook")
+async def twilio_webhook(request: Request):
+    form = await request.form()
+    data = dict(form)
+    print("Incoming Twilio webhook:", data)
+
+    if not APP_ENABLED:
+        return {"status": "disabled"}
+
+    try:
+        twilio_message_id = data.get("MessageSid")
+        from_number = data.get("From")
+        incoming_text = (data.get("Body") or "").strip()
+
+        print(f"WEBHOOK inbound twilio_message_id: {twilio_message_id}")
+        print(f"WEBHOOK from_number raw: {from_number}")
+        print(f"WEBHOOK incoming_text raw: {incoming_text}")
+
+        if not twilio_message_id or not from_number or not incoming_text:
+            return {"status": "ignored", "reason": "missing message id, phone, or text"}
+
+        upper_text = incoming_text.upper()
+
+        if upper_text == "STOP":
+            cancel_followup(from_number)
+            send_sms(from_number, "You will no longer receive messages.")
+            return {"status": "ok", "reason": "stop handled"}
+
+        if upper_text == "HELP":
+            send_sms(from_number, HELP_TEXT)
+            return {"status": "ok", "reason": "help handled"}
+
+        if has_processed_inbound_message(twilio_message_id):
+            print(f"Skipping duplicate inbound message: {twilio_message_id}")
+            return {"status": "duplicate_ignored"}
+
+        mark_inbound_message_processed(twilio_message_id, from_number)
+
+        asyncio.create_task(process_inbound_message(from_number, incoming_text))
+
+        return {"status": "ok"}
+
+    except Exception as e:
+        print("Error handling webhook:", str(e))
+        return {"status": "error", "detail": str(e)}
