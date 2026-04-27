@@ -986,22 +986,25 @@ async def dashboard():
         body { font-family: Arial, sans-serif; background:#f8fafc; padding:24px; }
         .wrap { max-width:1200px; margin:auto; }
         .card { background:white; border:1px solid #e2e8f0; border-radius:18px; padding:20px; margin-bottom:20px; }
-        .memory-card { border:1px solid #e2e8f0; border-radius:12px; padding:12px; margin-bottom:12px; }
+        .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+        .item { border:1px solid #e2e8f0; border-radius:12px; padding:12px; margin-bottom:12px; }
         .muted { font-size:12px; color:#64748b; margin-top:4px; }
         input, button { padding:10px; margin:4px 0; }
         input { width:100%; box-sizing:border-box; }
         button { cursor:pointer; }
-        pre { background:#f1f5f9; padding:12px; border-radius:12px; overflow:auto; }
-        .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+        .row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
         .error { color:#b91c1c; background:#fef2f2; padding:12px; border-radius:12px; }
         .success { color:#047857; background:#ecfdf5; padding:12px; border-radius:12px; }
+        .user-msg { background:#e2e8f0; color:#0f172a; }
+        .assistant-msg { background:#0f172a; color:white; }
       </style>
     </head>
+
     <body>
       <div class="wrap">
         <div class="card">
           <h1>Twilio Memory Dashboard</h1>
-          <p>View memory, recent messages, follow-ups, and processed inbound IDs.</p>
+          <p>View recent conversation state, durable memory, pending follow-ups, and processed inbound IDs.</p>
 
           <label>Phone Number</label>
           <input id="phone" value="+15105711417" />
@@ -1017,24 +1020,67 @@ async def dashboard():
           </div>
 
           <div class="card">
+            <h2 id="userFormTitle">Add User Memory</h2>
+
+            <label>Memory Key</label>
+            <input id="userMemoryKey" />
+
+            <label>Memory Value</label>
+            <input id="userMemoryValue" />
+
+            <label>Confidence</label>
+            <input id="userMemoryConfidence" value="1.0" />
+
+            <div class="row">
+              <button onclick="saveUserMemory()">Save Memory</button>
+              <button onclick="resetUserMemoryForm()">Clear Form</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
             <h2>Character Memory</h2>
             <div id="characterMemory">Not loaded</div>
+          </div>
+
+          <div class="card">
+            <h2 id="characterFormTitle">Add Character Memory</h2>
+
+            <label>Memory Key</label>
+            <input id="characterMemoryKey" />
+
+            <label>Memory Value</label>
+            <input id="characterMemoryValue" />
+
+            <label>Confidence</label>
+            <input id="characterMemoryConfidence" value="1.0" />
+
+            <div class="row">
+              <button onclick="saveCharacterMemory()">Save Character Memory</button>
+              <button onclick="resetCharacterMemoryForm()">Clear Form</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+              <h2 style="margin:0;">Recent Messages</h2>
+              <button onclick="clearRecentMessages()">Clear All</button>
+            </div>
+            <div id="recentMessages" style="margin-top:16px;">Not loaded</div>
+          </div>
+
+          <div class="card">
+            <h2>Pending Follow-ups</h2>
+            <div id="followups">Not loaded</div>
           </div>
         </div>
 
         <div class="card">
-          <h2>Recent Messages</h2>
-          <pre id="recentMessages">Not loaded</pre>
-        </div>
-
-        <div class="card">
-          <h2>Follow-ups</h2>
-          <pre id="followups">Not loaded</pre>
-        </div>
-
-        <div class="card">
-          <h2>Processed Inbound</h2>
-          <pre id="processed">Not loaded</pre>
+          <h2>Processed Inbound Message IDs</h2>
+          <div id="processed">Not loaded</div>
         </div>
       </div>
 
@@ -1065,6 +1111,22 @@ async def dashboard():
           return res.json();
         }
 
+        function setStatus(message, type = "") {
+          const status = document.getElementById("status");
+          if (!message) {
+            status.innerHTML = "";
+            return;
+          }
+
+          if (type === "error") {
+            status.innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
+          } else if (type === "success") {
+            status.innerHTML = `<div class="success">${escapeHtml(message)}</div>`;
+          } else {
+            status.innerHTML = escapeHtml(message);
+          }
+        }
+
         function renderMemoryRows(elementId, rows, type) {
           const element = document.getElementById(elementId);
 
@@ -1073,26 +1135,161 @@ async def dashboard():
             return;
           }
 
-          element.innerHTML = rows.map(row => {
+          element.innerHTML = rows.map((row, index) => {
             const key = escapeHtml(row[0]);
             const value = escapeHtml(row[1]);
             const confidence = escapeHtml(row[2]);
 
+            const editFn = type === "user" ? "startEditingUserMemory" : "startEditingCharacterMemory";
+            const deleteFn = type === "user" ? "deleteUserMemory" : "deleteCharacterMemory";
+
             return `
-              <div class="memory-card">
+              <div class="item">
                 <strong>${key}</strong>
                 <div>${value}</div>
                 <div class="muted">Confidence: ${confidence}</div>
-                <button onclick="${type === "user" ? "editUserMemory" : "editCharacterMemory"}('${key}', '${value}', '${confidence}')">Edit</button>
-                <button onclick="${type === "user" ? "deleteUserMemory" : "deleteCharacterMemory"}('${key}')">Delete</button>
+                <div class="row">
+                  <button onclick="${editFn}(${index})">Edit</button>
+                  <button onclick="${deleteFn}('${key}')">Delete</button>
+                </div>
+              </div>
+            `;
+          }).join("");
+
+          window[type + "MemoryRows"] = rows;
+        }
+
+        function renderRecentMessages(rows) {
+          const element = document.getElementById("recentMessages");
+
+          if (!rows || rows.length === 0) {
+            element.innerHTML = "<p>No recent messages loaded.</p>";
+            return;
+          }
+
+          element.innerHTML = rows.map((msg, index) => {
+            const role = escapeHtml(msg.role);
+            const content = escapeHtml(msg.content);
+            const cssClass = msg.role === "user" ? "user-msg" : "assistant-msg";
+
+            return `
+              <div class="item ${cssClass}">
+                <div class="muted">${role.toUpperCase()}</div>
+                <div style="margin-top:6px;">${content}</div>
+                <button onclick="deleteRecentMessage(${index})">Delete</button>
+              </div>
+            `;
+          }).join("");
+
+          window.recentMessageRows = rows;
+        }
+
+        function renderFollowups(rows) {
+          const element = document.getElementById("followups");
+
+          if (!rows || rows.length === 0) {
+            element.innerHTML = "<p>No follow-ups found.</p>";
+            return;
+          }
+
+          element.innerHTML = rows.map(row => `
+            <div class="item">
+              <div><strong>ID:</strong> ${escapeHtml(row.id)}</div>
+              <div><strong>Phone:</strong> ${escapeHtml(row.phone_number)}</div>
+              <div><strong>Status:</strong> ${escapeHtml(row.status)}</div>
+              <div><strong>Due:</strong> ${escapeHtml(row.due_at)}</div>
+              <div><strong>Created:</strong> ${escapeHtml(row.created_at)}</div>
+              <div><strong>Sent:</strong> ${escapeHtml(row.sent_at || "—")}</div>
+            </div>
+          `).join("");
+        }
+
+        function renderProcessedInbound(rows) {
+          const element = document.getElementById("processed");
+
+          if (!rows || rows.length === 0) {
+            element.innerHTML = "<p>No processed inbound messages found.</p>";
+            return;
+          }
+
+          element.innerHTML = rows.map(row => {
+            const id = row.twilio_message_id || row.telnyx_message_id || row.message_id || "";
+
+            return `
+              <div class="item">
+                <div><strong>ID:</strong> ${escapeHtml(id)}</div>
+                <div><strong>Phone:</strong> ${escapeHtml(row.phone_number)}</div>
+                <div><strong>Received:</strong> ${escapeHtml(row.received_at)}</div>
               </div>
             `;
           }).join("");
         }
 
+        async function loadAll(successMessage = "") {
+          const phone = document.getElementById("phone").value.trim();
+          const encodedPhone = encodeURIComponent(phone);
+
+          setStatus("Loading...");
+
+          try {
+            const [memory, followups, processed] = await Promise.all([
+              getJson(`/debug/memory/${encodedPhone}`),
+              getJson("/debug/followups"),
+              getJson("/debug/processed-inbound")
+            ]);
+
+            renderMemoryRows("userMemory", memory.user_memory, "user");
+            renderMemoryRows("characterMemory", memory.character_memory, "character");
+            renderRecentMessages(memory.recent_messages);
+            renderFollowups(followups.followups);
+            renderProcessedInbound(processed.processed_inbound_messages);
+
+            setStatus(successMessage || "Loaded.", successMessage ? "success" : "");
+          } catch (err) {
+            setStatus(err.message, "error");
+          }
+        }
+
+        function startEditingUserMemory(index) {
+          const row = window.userMemoryRows[index];
+          document.getElementById("userMemoryKey").value = row[0];
+          document.getElementById("userMemoryValue").value = row[1];
+          document.getElementById("userMemoryConfidence").value = row[2];
+          document.getElementById("userFormTitle").textContent = "Edit User Memory";
+          setStatus(`Editing user memory key: ${row[0]}`, "success");
+        }
+
+        function resetUserMemoryForm() {
+          document.getElementById("userMemoryKey").value = "";
+          document.getElementById("userMemoryValue").value = "";
+          document.getElementById("userMemoryConfidence").value = "1.0";
+          document.getElementById("userFormTitle").textContent = "Add User Memory";
+        }
+
+        async function saveUserMemory() {
+          const phone = document.getElementById("phone").value.trim();
+          const key = document.getElementById("userMemoryKey").value.trim();
+          const value = document.getElementById("userMemoryValue").value.trim();
+          const confidence = document.getElementById("userMemoryConfidence").value.trim();
+
+          if (!key || !value) {
+            setStatus("User memory key and value are required.", "error");
+            return;
+          }
+
+          await postJson("/debug/add-user-memory", {
+            phone_number: phone,
+            memory_key: key,
+            memory_value: value,
+            confidence: Number(confidence || 1.0)
+          });
+
+          resetUserMemoryForm();
+          await loadAll("User memory saved.");
+        }
+
         async function deleteUserMemory(memoryKey) {
           const phone = document.getElementById("phone").value.trim();
-
           if (!confirm(`Delete user memory: ${memoryKey}?`)) return;
 
           await postJson("/debug/delete-user-memory", {
@@ -1103,20 +1300,40 @@ async def dashboard():
           await loadAll("Deleted user memory.");
         }
 
-        async function editUserMemory(key, value, confidence) {
-          const newValue = prompt(`Edit user memory: ${key}`, value);
-          if (newValue === null) return;
+        function startEditingCharacterMemory(index) {
+          const row = window.characterMemoryRows[index];
+          document.getElementById("characterMemoryKey").value = row[0];
+          document.getElementById("characterMemoryValue").value = row[1];
+          document.getElementById("characterMemoryConfidence").value = row[2];
+          document.getElementById("characterFormTitle").textContent = "Edit Character Memory";
+          setStatus(`Editing character memory key: ${row[0]}`, "success");
+        }
 
-          const phone = document.getElementById("phone").value.trim();
+        function resetCharacterMemoryForm() {
+          document.getElementById("characterMemoryKey").value = "";
+          document.getElementById("characterMemoryValue").value = "";
+          document.getElementById("characterMemoryConfidence").value = "1.0";
+          document.getElementById("characterFormTitle").textContent = "Add Character Memory";
+        }
 
-          await postJson("/debug/add-user-memory", {
-            phone_number: phone,
+        async function saveCharacterMemory() {
+          const key = document.getElementById("characterMemoryKey").value.trim();
+          const value = document.getElementById("characterMemoryValue").value.trim();
+          const confidence = document.getElementById("characterMemoryConfidence").value.trim();
+
+          if (!key || !value) {
+            setStatus("Character memory key and value are required.", "error");
+            return;
+          }
+
+          await postJson("/debug/add-character-memory", {
             memory_key: key,
-            memory_value: newValue,
+            memory_value: value,
             confidence: Number(confidence || 1.0)
           });
 
-          await loadAll("Updated user memory.");
+          resetCharacterMemoryForm();
+          await loadAll("Character memory saved.");
         }
 
         async function deleteCharacterMemory(memoryKey) {
@@ -1129,51 +1346,31 @@ async def dashboard():
           await loadAll("Deleted character memory.");
         }
 
-        async function editCharacterMemory(key, value, confidence) {
-          const newValue = prompt(`Edit character memory: ${key}`, value);
-          if (newValue === null) return;
+        async function deleteRecentMessage(index) {
+          const row = window.recentMessageRows[index];
+          const phone = document.getElementById("phone").value.trim();
 
-          await postJson("/debug/add-character-memory", {
-            memory_key: key,
-            memory_value: newValue,
-            confidence: Number(confidence || 1.0)
+          if (!confirm("Delete this recent message from the database?")) return;
+
+          await postJson("/debug/delete-message", {
+            phone_number: phone,
+            role: row.role,
+            content: row.content
           });
 
-          await loadAll("Updated character memory.");
+          await loadAll("Recent message deleted.");
         }
 
-        async function loadAll(successMessage = "") {
+        async function clearRecentMessages() {
           const phone = document.getElementById("phone").value.trim();
-          const encodedPhone = encodeURIComponent(phone);
-          const status = document.getElementById("status");
 
-          status.innerHTML = "Loading...";
+          if (!confirm("Delete all recent messages for this phone number?")) return;
 
-          try {
-            const [memory, followups, processed] = await Promise.all([
-              getJson(`/debug/memory/${encodedPhone}`),
-              getJson(`/debug/followups`),
-              getJson(`/debug/processed-inbound`)
-            ]);
+          await postJson("/debug/clear-messages", {
+            phone_number: phone
+          });
 
-            renderMemoryRows("userMemory", memory.user_memory, "user");
-            renderMemoryRows("characterMemory", memory.character_memory, "character");
-
-            document.getElementById("recentMessages").textContent =
-              JSON.stringify(memory.recent_messages, null, 2);
-
-            document.getElementById("followups").textContent =
-              JSON.stringify(followups.followups, null, 2);
-
-            document.getElementById("processed").textContent =
-              JSON.stringify(processed.processed_inbound_messages, null, 2);
-
-            status.innerHTML = successMessage
-              ? `<div class="success">${successMessage}</div>`
-              : "Loaded.";
-          } catch (err) {
-            status.innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
-          }
+          await loadAll("All recent messages for this phone number were deleted.");
         }
 
         loadAll();
