@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 import asyncio
 import json
 import os
@@ -994,6 +995,113 @@ async def debug_processed_inbound():
         ]
     }
 
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    return """
+    <!doctype html>
+    <html>
+    <head>
+      <title>Twilio Memory Dashboard</title>
+      <style>
+        body { font-family: Arial, sans-serif; background:#f8fafc; padding:24px; }
+        .wrap { max-width:1200px; margin:auto; }
+        .card { background:white; border:1px solid #e2e8f0; border-radius:18px; padding:20px; margin-bottom:20px; }
+        input, button { padding:10px; margin:4px 0; }
+        input { width:100%; box-sizing:border-box; }
+        button { cursor:pointer; }
+        pre { background:#f1f5f9; padding:12px; border-radius:12px; overflow:auto; }
+        .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+        .error { color:#b91c1c; background:#fef2f2; padding:12px; border-radius:12px; }
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          <h1>Twilio Memory Dashboard</h1>
+          <p>View memory, recent messages, follow-ups, and processed inbound IDs.</p>
+
+          <label>Phone Number</label>
+          <input id="phone" value="+15105711417" />
+
+          <button onclick="loadAll()">Refresh</button>
+          <div id="status"></div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h2>User Memory</h2>
+            <pre id="userMemory">Not loaded</pre>
+          </div>
+
+          <div class="card">
+            <h2>Character Memory</h2>
+            <pre id="characterMemory">Not loaded</pre>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Recent Messages</h2>
+          <pre id="recentMessages">Not loaded</pre>
+        </div>
+
+        <div class="card">
+          <h2>Follow-ups</h2>
+          <pre id="followups">Not loaded</pre>
+        </div>
+
+        <div class="card">
+          <h2>Processed Inbound</h2>
+          <pre id="processed">Not loaded</pre>
+        </div>
+      </div>
+
+      <script>
+        async function getJson(path) {
+          const res = await fetch(path);
+          if (!res.ok) throw new Error(await res.text());
+          return res.json();
+        }
+
+        async function loadAll() {
+          const phone = document.getElementById("phone").value.trim();
+          const encodedPhone = encodeURIComponent(phone);
+          const status = document.getElementById("status");
+
+          status.innerHTML = "Loading...";
+
+          try {
+            const [memory, followups, processed] = await Promise.all([
+              getJson(`/debug/memory/${encodedPhone}`),
+              getJson(`/debug/followups`),
+              getJson(`/debug/processed-inbound`)
+            ]);
+
+            document.getElementById("userMemory").textContent =
+              JSON.stringify(memory.user_memory, null, 2);
+
+            document.getElementById("characterMemory").textContent =
+              JSON.stringify(memory.character_memory, null, 2);
+
+            document.getElementById("recentMessages").textContent =
+              JSON.stringify(memory.recent_messages, null, 2);
+
+            document.getElementById("followups").textContent =
+              JSON.stringify(followups.followups, null, 2);
+
+            document.getElementById("processed").textContent =
+              JSON.stringify(processed.processed_inbound_messages, null, 2);
+
+            status.innerHTML = "Loaded.";
+          } catch (err) {
+            status.innerHTML = `<div class="error">${err.message}</div>`;
+          }
+        }
+
+        loadAll();
+      </script>
+    </body>
+    </html>
+    """
 
 @app.post("/debug/add-user-memory")
 async def add_user_memory(request: Request):
