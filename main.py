@@ -986,12 +986,15 @@ async def dashboard():
         body { font-family: Arial, sans-serif; background:#f8fafc; padding:24px; }
         .wrap { max-width:1200px; margin:auto; }
         .card { background:white; border:1px solid #e2e8f0; border-radius:18px; padding:20px; margin-bottom:20px; }
+        .memory-card { border:1px solid #e2e8f0; border-radius:12px; padding:12px; margin-bottom:12px; }
+        .muted { font-size:12px; color:#64748b; margin-top:4px; }
         input, button { padding:10px; margin:4px 0; }
         input { width:100%; box-sizing:border-box; }
         button { cursor:pointer; }
         pre { background:#f1f5f9; padding:12px; border-radius:12px; overflow:auto; }
         .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
         .error { color:#b91c1c; background:#fef2f2; padding:12px; border-radius:12px; }
+        .success { color:#047857; background:#ecfdf5; padding:12px; border-radius:12px; }
       </style>
     </head>
     <body>
@@ -1010,12 +1013,12 @@ async def dashboard():
         <div class="grid">
           <div class="card">
             <h2>User Memory</h2>
-            <pre id="userMemory">Not loaded</pre>
+            <div id="userMemory">Not loaded</div>
           </div>
 
           <div class="card">
             <h2>Character Memory</h2>
-            <pre id="characterMemory">Not loaded</pre>
+            <div id="characterMemory">Not loaded</div>
           </div>
         </div>
 
@@ -1036,13 +1039,110 @@ async def dashboard():
       </div>
 
       <script>
+        function escapeHtml(value) {
+          return String(value ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+        }
+
         async function getJson(path) {
           const res = await fetch(path);
           if (!res.ok) throw new Error(await res.text());
           return res.json();
         }
 
-        async function loadAll() {
+        async function postJson(path, payload) {
+          const res = await fetch(path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+
+          if (!res.ok) throw new Error(await res.text());
+          return res.json();
+        }
+
+        function renderMemoryRows(elementId, rows, type) {
+          const element = document.getElementById(elementId);
+
+          if (!rows || rows.length === 0) {
+            element.innerHTML = "<p>No memory stored yet.</p>";
+            return;
+          }
+
+          element.innerHTML = rows.map(row => {
+            const key = escapeHtml(row[0]);
+            const value = escapeHtml(row[1]);
+            const confidence = escapeHtml(row[2]);
+
+            return `
+              <div class="memory-card">
+                <strong>${key}</strong>
+                <div>${value}</div>
+                <div class="muted">Confidence: ${confidence}</div>
+                <button onclick="${type === "user" ? "editUserMemory" : "editCharacterMemory"}('${key}', '${value}', '${confidence}')">Edit</button>
+                <button onclick="${type === "user" ? "deleteUserMemory" : "deleteCharacterMemory"}('${key}')">Delete</button>
+              </div>
+            `;
+          }).join("");
+        }
+
+        async function deleteUserMemory(memoryKey) {
+          const phone = document.getElementById("phone").value.trim();
+
+          if (!confirm(`Delete user memory: ${memoryKey}?`)) return;
+
+          await postJson("/debug/delete-user-memory", {
+            phone_number: phone,
+            memory_key: memoryKey
+          });
+
+          await loadAll("Deleted user memory.");
+        }
+
+        async function editUserMemory(key, value, confidence) {
+          const newValue = prompt(`Edit user memory: ${key}`, value);
+          if (newValue === null) return;
+
+          const phone = document.getElementById("phone").value.trim();
+
+          await postJson("/debug/add-user-memory", {
+            phone_number: phone,
+            memory_key: key,
+            memory_value: newValue,
+            confidence: Number(confidence || 1.0)
+          });
+
+          await loadAll("Updated user memory.");
+        }
+
+        async function deleteCharacterMemory(memoryKey) {
+          if (!confirm(`Delete character memory: ${memoryKey}?`)) return;
+
+          await postJson("/debug/delete-character-memory", {
+            memory_key: memoryKey
+          });
+
+          await loadAll("Deleted character memory.");
+        }
+
+        async function editCharacterMemory(key, value, confidence) {
+          const newValue = prompt(`Edit character memory: ${key}`, value);
+          if (newValue === null) return;
+
+          await postJson("/debug/add-character-memory", {
+            memory_key: key,
+            memory_value: newValue,
+            confidence: Number(confidence || 1.0)
+          });
+
+          await loadAll("Updated character memory.");
+        }
+
+        async function loadAll(successMessage = "") {
           const phone = document.getElementById("phone").value.trim();
           const encodedPhone = encodeURIComponent(phone);
           const status = document.getElementById("status");
@@ -1056,11 +1156,8 @@ async def dashboard():
               getJson(`/debug/processed-inbound`)
             ]);
 
-            document.getElementById("userMemory").textContent =
-              JSON.stringify(memory.user_memory, null, 2);
-
-            document.getElementById("characterMemory").textContent =
-              JSON.stringify(memory.character_memory, null, 2);
+            renderMemoryRows("userMemory", memory.user_memory, "user");
+            renderMemoryRows("characterMemory", memory.character_memory, "character");
 
             document.getElementById("recentMessages").textContent =
               JSON.stringify(memory.recent_messages, null, 2);
@@ -1071,9 +1168,11 @@ async def dashboard():
             document.getElementById("processed").textContent =
               JSON.stringify(processed.processed_inbound_messages, null, 2);
 
-            status.innerHTML = "Loaded.";
+            status.innerHTML = successMessage
+              ? `<div class="success">${successMessage}</div>`
+              : "Loaded.";
           } catch (err) {
-            status.innerHTML = `<div class="error">${err.message}</div>`;
+            status.innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
           }
         }
 
