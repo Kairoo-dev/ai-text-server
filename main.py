@@ -52,8 +52,8 @@ MAX_RECENT_MESSAGES = 20
 FOLLOWUP_MIN_HOURS = 1
 FOLLOWUP_MAX_HOURS = 2
 
-MAX_REPLY_CHARS = 240
-MAX_FOLLOWUP_CHARS = 240
+MAX_REPLY_CHARS = 230
+MAX_FOLLOWUP_CHARS = 230
 
 # More human-like reply timing
 REPLY_DELAY_MIN_SECONDS = 5.5
@@ -241,9 +241,61 @@ def utc_now() -> datetime:
 
 def truncate_for_sms(text: str, limit: int) -> str:
     text = (text or "").strip()
+
     if len(text) <= limit:
         return text
-    return text[: limit - 3].rstrip() + "..."
+
+    # Try to cut cleanly at the last sentence ending before the limit
+    sentence_endings = [".", "!", "?"]
+    cutoff = limit - 3
+    best_sentence_cut = max(text.rfind(p, 0, cutoff) for p in sentence_endings)
+
+    if best_sentence_cut >= 40:
+        return text[:best_sentence_cut + 1].strip()
+
+    # Otherwise cut at the last space before the limit
+    best_word_cut = text.rfind(" ", 0, cutoff)
+
+    if best_word_cut >= 40:
+        return text[:best_word_cut].rstrip() + "..."
+
+    # Final fallback
+    return text[:cutoff].rstrip() + "..."
+
+
+def shorten_reply_if_needed(reply: str, limit: int = MAX_REPLY_CHARS) -> str:
+    reply = (reply or "").strip()
+
+    if len(reply) <= limit:
+        return reply
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"Rewrite this SMS to be under {limit} characters. "
+                "Keep the same meaning and tone. "
+                "Return only the rewritten SMS."
+            ),
+        },
+        {"role": "user", "content": reply},
+    ]
+
+    try:
+        shortened = deepseek_chat(
+            messages,
+            temperature=0.4,
+            max_tokens=80,
+        ).strip()
+
+        if len(shortened) <= limit:
+            return shortened
+
+        return truncate_for_sms(shortened, limit)
+
+    except Exception as e:
+        print("Shorten reply error:", str(e))
+        return truncate_for_sms(reply, limit)
 
 
 def get_conn():
@@ -718,6 +770,7 @@ def get_ai_reply(phone_number: str, user_message: str) -> str:
         max_tokens=180,
     )
     reply = truncate_for_sms(reply, MAX_REPLY_CHARS)
+    reply = shorten_reply_if_needed(reply, MAX_REPLY_CHARS)
 
     reply = repair_reply_if_needed(user_message, reply)
     reply = truncate_for_sms(reply, MAX_REPLY_CHARS)
