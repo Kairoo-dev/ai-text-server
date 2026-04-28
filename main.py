@@ -33,6 +33,7 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+YOUR_PHONE_NUMBER = os.getenv("YOUR_PHONE_NUMBER")
 
 APP_ENABLED = os.getenv("APP_ENABLED", "true").lower() == "true"
 
@@ -1516,6 +1517,11 @@ async def twilio_webhook(request: Request):
     try:
         twilio_message_id = data.get("MessageSid")
         from_number = data.get("From")
+        
+        if YOUR_PHONE_NUMBER and from_number != YOUR_PHONE_NUMBER:
+            print(f"Ignoring message from unauthorized number: {from_number}")
+            return {"status": "ignored", "reason": "unauthorized number"}
+            
         incoming_text = (data.get("Body") or "").strip()
 
         print(f"WEBHOOK inbound twilio_message_id: {twilio_message_id}")
