@@ -991,7 +991,7 @@ async def root():
 
 
 @app.get("/debug/memory/{phone_number}")
-async def debug_memory(phone_number: str):
+async def debug_memory(phone_number: str, admin=Depends(require_admin)):
     return {
         "user_memory": get_user_memory(phone_number),
         "character_memory": get_character_memory(),
@@ -1139,6 +1139,8 @@ async def logout():
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    require_dashboard_enabled()
+
     if not is_admin_authenticated(request):
         return RedirectResponse(url="/login", status_code=303)
     return """
