@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 import asyncio
 import json
 import os
@@ -850,6 +850,13 @@ def get_time_of_day_context() -> str:
     return f"Current local time: {now_local.strftime('%Y-%m-%d %I:%M %p %Z')}. Time of day: {label}. {vibe}"
     
 
+def twiml_response():
+    return Response(
+        content="<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>",
+        media_type="text/xml",
+    )
+
+
 def extract_and_store_memory(phone_number: str):
     recent_messages = get_recent_messages(phone_number, limit=8)
 
@@ -1590,46 +1597,41 @@ async def twilio_webhook(request: Request):
     print("Incoming Twilio webhook:", data)
 
     if not APP_ENABLED:
-        return {"status": "disabled"}
+        return twiml_response()
 
     try:
         twilio_message_id = data.get("MessageSid")
         from_number = data.get("From")
-        
+
         if YOUR_PHONE_NUMBER and from_number != YOUR_PHONE_NUMBER:
             print(f"Ignoring message from unauthorized number: {from_number}")
-            return {"status": "ignored", "reason": "unauthorized number"}
-            
+            return twiml_response()
+
         incoming_text = (data.get("Body") or "").strip()
 
-        print(f"WEBHOOK inbound twilio_message_id: {twilio_message_id}")
-        print(f"WEBHOOK from_number raw: {from_number}")
-        print(f"WEBHOOK incoming_text raw: {incoming_text}")
-
         if not twilio_message_id or not from_number or not incoming_text:
-            return {"status": "ignored", "reason": "missing message id, phone, or text"}
+            return twiml_response()
 
         upper_text = incoming_text.upper()
 
         if upper_text == "STOP":
             cancel_followup(from_number)
             send_sms(from_number, "You will no longer receive messages.")
-            return {"status": "ok", "reason": "stop handled"}
+            return twiml_response()
 
         if upper_text == "HELP":
             send_sms(from_number, HELP_TEXT)
-            return {"status": "ok", "reason": "help handled"}
+            return twiml_response()
 
         if has_processed_inbound_message(twilio_message_id):
             print(f"Skipping duplicate inbound message: {twilio_message_id}")
-            return {"status": "duplicate_ignored"}
+            return twiml_response()
 
         mark_inbound_message_processed(twilio_message_id, from_number)
-
         asyncio.create_task(process_inbound_message(from_number, incoming_text))
 
-        return {"status": "ok"}
+        return twiml_response()
 
     except Exception as e:
         print("Error handling webhook:", str(e))
-        return {"status": "error", "detail": str(e)}
+        return twiml_response()
