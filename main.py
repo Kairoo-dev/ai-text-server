@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, RedirectResponse
 import asyncio
 import json
 import os
@@ -36,6 +36,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 YOUR_PHONE_NUMBER = os.getenv("YOUR_PHONE_NUMBER")
 
 APP_ENABLED = os.getenv("APP_ENABLED", "true").lower() == "true"
+DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").lower() == "true"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+ADMIN_COOKIE_NAME = "admin_auth"
 
 # =========================
 # External API endpoints
@@ -297,6 +300,25 @@ def shorten_reply_if_needed(reply: str, limit: int = MAX_REPLY_CHARS) -> str:
         print("Shorten reply error:", str(e))
         return truncate_for_sms(reply, limit)
 
+
+def require_dashboard_enabled():
+    if not DASHBOARD_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+def is_admin_authenticated(request: Request) -> bool:
+    if not ADMIN_PASSWORD:
+        return False
+
+    return request.cookies.get(ADMIN_COOKIE_NAME) == ADMIN_PASSWORD
+
+
+def require_admin(request: Request):
+    require_dashboard_enabled()
+
+    if not is_admin_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
 
 def get_conn():
     if not DATABASE_URL:
@@ -978,7 +1000,7 @@ async def debug_memory(phone_number: str):
 
 
 @app.get("/debug/followups")
-async def debug_followups():
+async def debug_followups(admin=Depends(require_admin)):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1005,7 +1027,7 @@ async def debug_followups():
 
 
 @app.get("/debug/message-count")
-async def debug_message_count():
+async def debug_message_count(admin=Depends(require_admin)):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM messages")
@@ -1014,7 +1036,7 @@ async def debug_message_count():
 
 
 @app.get("/debug/phone-numbers")
-async def debug_phone_numbers():
+async def debug_phone_numbers(admin=Depends(require_admin)):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1034,7 +1056,7 @@ async def debug_phone_numbers():
 
 
 @app.get("/debug/processed-inbound")
-async def debug_processed_inbound():
+async def debug_processed_inbound(admin=Depends(require_admin)):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1056,8 +1078,69 @@ async def debug_processed_inbound():
         ]
     }
 
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    require_dashboard_enabled()
+
+    return """
+    <!doctype html>
+    <html>
+    <head>
+      <title>Admin Login</title>
+      <style>
+        body { font-family: Arial, sans-serif; background:#f8fafc; padding:24px; }
+        .card { max-width:420px; margin:80px auto; background:white; border:1px solid #e2e8f0; border-radius:18px; padding:24px; }
+        input, button { width:100%; padding:12px; margin-top:10px; box-sizing:border-box; }
+        button { cursor:pointer; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Admin Login</h1>
+        <form method="post" action="/login">
+          <input type="password" name="password" placeholder="Password" autofocus />
+          <button type="submit">Log in</button>
+        </form>
+      </div>
+    </body>
+    </html>
+    """
+
+
+@app.post("/login")
+async def login(request: Request):
+    require_dashboard_enabled()
+
+    form = await request.form()
+    password = form.get("password")
+
+    if not ADMIN_PASSWORD or password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    response = RedirectResponse(url="/dashboard", status_code=303)
+    response.set_cookie(
+        key=ADMIN_COOKIE_NAME,
+        value=ADMIN_PASSWORD,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 7,
+    )
+    return response
+
+
+@app.get("/logout")
+async def logout():
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(ADMIN_COOKIE_NAME)
+    return response
+    
+
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
+async def dashboard(request: Request):
+    if not is_admin_authenticated(request):
+        return RedirectResponse(url="/login", status_code=303)
     return """
     <!doctype html>
     <html>
@@ -1461,7 +1544,7 @@ async def dashboard():
     """
 
 @app.post("/debug/add-user-memory")
-async def add_user_memory(request: Request):
+async def add_user_memory(request: Request, admin=Depends(require_admin)):
     body = await request.json()
 
     phone_number = body.get("phone_number")
@@ -1477,7 +1560,7 @@ async def add_user_memory(request: Request):
 
 
 @app.post("/debug/delete-user-memory")
-async def delete_user_memory(request: Request):
+async def delete_user_memory(request: Request, admin=Depends(require_admin)):
     body = await request.json()
 
     phone_number = body.get("phone_number")
@@ -1500,7 +1583,7 @@ async def delete_user_memory(request: Request):
 
 
 @app.post("/debug/clear-messages")
-async def clear_messages(request: Request):
+async def clear_messages(request: Request, admin=Depends(require_admin)):
     body = await request.json()
 
     phone_number = body.get("phone_number")
@@ -1522,7 +1605,7 @@ async def clear_messages(request: Request):
 
 
 @app.post("/debug/add-character-memory")
-async def add_character_memory(request: Request):
+async def add_character_memory(request: Request, admin=Depends(require_admin)):
     body = await request.json()
 
     memory_key = body.get("memory_key")
@@ -1537,7 +1620,7 @@ async def add_character_memory(request: Request):
 
 
 @app.post("/debug/delete-character-memory")
-async def delete_character_memory(request: Request):
+async def delete_character_memory(request: Request, admin=Depends(require_admin)):
     body = await request.json()
 
     memory_key = body.get("memory_key")
@@ -1559,7 +1642,7 @@ async def delete_character_memory(request: Request):
 
 
 @app.post("/debug/delete-message")
-async def delete_message(request: Request):
+async def delete_message(request: Request, admin=Depends(require_admin)):
     body = await request.json()
 
     phone_number = body.get("phone_number")
