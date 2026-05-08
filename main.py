@@ -661,7 +661,7 @@ def deepseek_chat(
     }
 
     payload = {
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-pro",
         "messages": messages,
         "temperature": temperature,
         "presence_penalty": presence_penalty,
