@@ -639,7 +639,7 @@ def send_sms(to_number: str, message: str, limit: int = MAX_REPLY_CHARS):
         TWILIO_MESSAGES_URL,
         data=payload,
         auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
-        timeout=30,
+        timeout=90,
     )
 
     print("Twilio send status:", response.status_code)
@@ -673,7 +673,7 @@ def deepseek_chat(
         DEEPSEEK_CHAT_URL,
         json=payload,
         headers=headers,
-        timeout=45,
+        timeout=90,
     )
 
     print("DeepSeek status:", response.status_code)
