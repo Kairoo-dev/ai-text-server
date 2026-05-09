@@ -639,7 +639,7 @@ def send_sms(to_number: str, message: str, limit: int = MAX_REPLY_CHARS):
         TWILIO_MESSAGES_URL,
         data=payload,
         auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
-        timeout=90,
+        timeout=30,
     )
 
     print("Twilio send status:", response.status_code)
@@ -653,7 +653,7 @@ def deepseek_chat(
     messages: list[dict],
     temperature: float = 1.1,
     presence_penalty: float = 0.3,
-    max_tokens: int = 500,
+    max_tokens: int = 180,
 ) -> str:
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -661,7 +661,7 @@ def deepseek_chat(
     }
 
     payload = {
-        "model": "deepseek-v4-pro",
+        "model": "deepseek-chat",
         "messages": messages,
         "temperature": temperature,
         "presence_penalty": presence_penalty,
@@ -673,7 +673,7 @@ def deepseek_chat(
         DEEPSEEK_CHAT_URL,
         json=payload,
         headers=headers,
-        timeout=90,
+        timeout=45,
     )
 
     print("DeepSeek status:", response.status_code)
@@ -681,21 +681,7 @@ def deepseek_chat(
 
     response.raise_for_status()
     data = response.json()
-    message = data["choices"][0]["message"]
-
-    content = (message.get("content") or "").strip()
-    reasoning = (message.get("reasoning_content") or "").strip()
-
-    # Prefer real content if present
-    if content:
-        return content
-
-    # Temporary fallback for reasoning models
-    if reasoning:
-        print("WARNING: using reasoning_content fallback")
-        return reasoning
-
-    return ""
+    return data["choices"][0]["message"]["content"].strip()
 
 
 # =========================
@@ -801,7 +787,7 @@ def get_ai_reply(phone_number: str, user_message: str) -> str:
         messages,
         temperature=1.1,
         presence_penalty=0.3,
-        max_tokens=500,
+        max_tokens=180,
     )
     reply = truncate_for_sms(reply, MAX_REPLY_CHARS)
     reply = shorten_reply_if_needed(reply, MAX_REPLY_CHARS)
@@ -942,11 +928,7 @@ async def process_inbound_message(from_number: str, incoming_text: str):
         await asyncio.sleep(random.uniform(REPLY_DELAY_MIN_SECONDS, REPLY_DELAY_MAX_SECONDS))
 
         reply = get_ai_reply(from_number, incoming_text)
-        if not reply or not reply.strip():
-            print("Skipping outbound SMS: empty reply")
-            return
-
-        send_sms(your_phone_number, reply)
+        send_sms(from_number, reply)
 
         history_snapshot = get_recent_messages(from_number, limit=8)
         schedule_followup(from_number, history_snapshot)
