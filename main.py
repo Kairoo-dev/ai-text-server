@@ -653,7 +653,7 @@ def deepseek_chat(
     messages: list[dict],
     temperature: float = 1.1,
     presence_penalty: float = 0.3,
-    max_tokens: int = 180,
+    max_tokens: int = 500,
 ) -> str:
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -681,7 +681,21 @@ def deepseek_chat(
 
     response.raise_for_status()
     data = response.json()
-    return data["choices"][0]["message"]["content"].strip()
+    message = data["choices"][0]["message"]
+
+    content = (message.get("content") or "").strip()
+    reasoning = (message.get("reasoning_content") or "").strip()
+
+    # Prefer real content if present
+    if content:
+        return content
+
+    # Temporary fallback for reasoning models
+    if reasoning:
+        print("WARNING: using reasoning_content fallback")
+        return reasoning
+
+    return ""
 
 
 # =========================
@@ -787,7 +801,7 @@ def get_ai_reply(phone_number: str, user_message: str) -> str:
         messages,
         temperature=1.1,
         presence_penalty=0.3,
-        max_tokens=180,
+        max_tokens=500,
     )
     reply = truncate_for_sms(reply, MAX_REPLY_CHARS)
     reply = shorten_reply_if_needed(reply, MAX_REPLY_CHARS)
@@ -928,7 +942,11 @@ async def process_inbound_message(from_number: str, incoming_text: str):
         await asyncio.sleep(random.uniform(REPLY_DELAY_MIN_SECONDS, REPLY_DELAY_MAX_SECONDS))
 
         reply = get_ai_reply(from_number, incoming_text)
-        send_sms(from_number, reply)
+        if not reply or not reply.strip():
+            print("Skipping outbound SMS: empty reply")
+            return
+
+        send_sms(phone_number, reply)
 
         history_snapshot = get_recent_messages(from_number, limit=8)
         schedule_followup(from_number, history_snapshot)
