@@ -946,7 +946,7 @@ async def process_inbound_message(from_number: str, incoming_text: str):
             print("Skipping outbound SMS: empty reply")
             return
 
-        send_sms(phone_number, reply)
+        send_sms(your_phone_number, reply)
 
         history_snapshot = get_recent_messages(from_number, limit=8)
         schedule_followup(from_number, history_snapshot)
