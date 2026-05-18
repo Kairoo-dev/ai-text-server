@@ -650,7 +650,7 @@ def send_sms(to_number: str, message: str, limit: int = MAX_REPLY_CHARS):
 
 def deepseek_chat(
     messages: list[dict],
-    temperature: float = 1.1,
+    temperature: float = 0.95,
     presence_penalty: float = 0.3,
     max_tokens: int = 180,
 ) -> str:
@@ -784,7 +784,7 @@ def get_ai_reply(phone_number: str, user_message: str) -> str:
     messages = build_reply_messages(phone_number)
     reply = deepseek_chat(
         messages,
-        temperature=1.1,
+        temperature=0.95,
         presence_penalty=0.3,
         max_tokens=180,
     )
@@ -837,7 +837,7 @@ def generate_followup_message(phone_number: str, followup_payload) -> str | None
         }
     ]
 
-    followup = deepseek_chat(messages, temperature=1.1, max_tokens=180).strip()
+    followup = deepseek_chat(messages, temperature=0.95, max_tokens=180).strip()
     return truncate_for_sms(followup, MAX_FOLLOWUP_CHARS)
 
 
