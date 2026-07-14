@@ -56,15 +56,16 @@ FOLLOWUP_MIN_HOURS = 2
 FOLLOWUP_MAX_HOURS = 6
 
 # Hard ceiling: an outgoing SMS must NEVER exceed this many characters.
-# The model is instructed to aim comfortably below this (see MAIN_PROMPT /
-# FOLLOWUP_PROMPT) so replies stay complete, and truncate_for_sms guarantees
-# the limit is never exceeded as a last-resort safety net.
-MAX_REPLY_CHARS = 240
-MAX_FOLLOWUP_CHARS = 240
+# At GSM-7 rates this fits in 2 billed segments (153 + 147), maximizing the
+# second segment. The model is instructed to aim comfortably below this (see
+# MAIN_PROMPT / FOLLOWUP_PROMPT), and truncate_for_sms guarantees the limit is
+# never exceeded as a last-resort safety net.
+MAX_REPLY_CHARS = 300
+MAX_FOLLOWUP_CHARS = 300
 
 # Soft target given to the model / rewriter so it leaves headroom under the
 # hard ceiling and rarely needs truncation.
-REPLY_TARGET_CHARS = 210
+REPLY_TARGET_CHARS = 280
 
 # More human-like reply timing
 REPLY_DELAY_MIN_SECONDS = 5.5
@@ -86,7 +87,7 @@ Write the next reply in a continuous fictional roleplay with the user.
 
 TEXTING STYLE:
 - write like a real person texting
-- Aim for about 200 characters or fewer, and NEVER exceed 240 characters.
+- Aim for about 280 characters or fewer, and NEVER exceed 300 characters.
 - Always finish your thought; never end mid-sentence or trail off.
 - casual tone is fine
 - no markdown
@@ -182,7 +183,7 @@ Context:
 Rules:
 - Write exactly one short message.
 - Keep it warm, casual, natural, playful, and flirtatious.
-- Aim for about 200 characters or fewer, and NEVER exceed 240 characters.
+- Aim for about 280 characters or fewer, and NEVER exceed 300 characters.
 - Always finish your thought; never end mid-sentence or trail off.
 - No markdown.
 - No bullet points.
@@ -735,7 +736,7 @@ You are rewriting a text message reply so it feels more conversational.
 
 Rules:
 - Keep the original meaning and tone.
-- Keep it short: 1 to 2 sentences, aim for about 200 characters and never exceed 240.
+- Keep it short: 1 to 2 sentences, aim for about 280 characters and never exceed 300.
 - It must be a complete message: do not end mid-sentence or trail off.
 - Make it easier for the user to respond naturally.
 - Usually add a natural question, inviting remark, or conversational hook.
