@@ -55,8 +55,16 @@ MAX_RECENT_MESSAGES = 20
 FOLLOWUP_MIN_HOURS = 2
 FOLLOWUP_MAX_HOURS = 6
 
-MAX_REPLY_CHARS = 230
-MAX_FOLLOWUP_CHARS = 230
+# Hard ceiling: an outgoing SMS must NEVER exceed this many characters.
+# The model is instructed to aim comfortably below this (see MAIN_PROMPT /
+# FOLLOWUP_PROMPT) so replies stay complete, and truncate_for_sms guarantees
+# the limit is never exceeded as a last-resort safety net.
+MAX_REPLY_CHARS = 240
+MAX_FOLLOWUP_CHARS = 240
+
+# Soft target given to the model / rewriter so it leaves headroom under the
+# hard ceiling and rarely needs truncation.
+REPLY_TARGET_CHARS = 210
 
 # More human-like reply timing
 REPLY_DELAY_MIN_SECONDS = 5.5
@@ -78,7 +86,8 @@ Write the next reply in a continuous fictional roleplay with the user.
 
 TEXTING STYLE:
 - write like a real person texting
-- Absolute maximum: 240 characters.
+- Aim for about 200 characters or fewer, and NEVER exceed 240 characters.
+- Always finish your thought; never end mid-sentence or trail off.
 - casual tone is fine
 - no markdown
 - single paragraph only
@@ -173,7 +182,8 @@ Context:
 Rules:
 - Write exactly one short message.
 - Keep it warm, casual, natural, playful, and flirtatious.
-- Absolute maximum: 240 characters.
+- Aim for about 200 characters or fewer, and NEVER exceed 240 characters.
+- Always finish your thought; never end mid-sentence or trail off.
 - No markdown.
 - No bullet points.
 - Do not sound like marketing.
@@ -269,12 +279,18 @@ def shorten_reply_if_needed(reply: str, limit: int = MAX_REPLY_CHARS) -> str:
     if len(reply) <= limit:
         return reply
 
+    # Aim below the hard ceiling so the rewrite has room to finish cleanly.
+    target = min(REPLY_TARGET_CHARS, limit)
+
     messages = [
         {
             "role": "system",
             "content": (
-                f"Rewrite this SMS to be under {limit} characters. "
-                "Keep the same meaning and tone. "
+                f"Rewrite this SMS so it is at most {target} characters "
+                f"and never more than {limit} characters. "
+                "Keep the same meaning, tone, and voice. "
+                "It MUST be a complete message: do not end mid-sentence or trail off. "
+                "Finish the thought naturally within the limit. "
                 "Return only the rewritten SMS."
             ),
         },
@@ -285,7 +301,7 @@ def shorten_reply_if_needed(reply: str, limit: int = MAX_REPLY_CHARS) -> str:
         shortened = deepseek_chat(
             messages,
             temperature=0.4,
-            max_tokens=80,
+            max_tokens=150,
         ).strip()
 
         if len(shortened) <= limit:
@@ -719,7 +735,8 @@ You are rewriting a text message reply so it feels more conversational.
 
 Rules:
 - Keep the original meaning and tone.
-- Keep it short: 2 to 3 sentences.
+- Keep it short: 1 to 2 sentences, aim for about 200 characters and never exceed 240.
+- It must be a complete message: do not end mid-sentence or trail off.
 - Make it easier for the user to respond naturally.
 - Usually add a natural question, inviting remark, or conversational hook.
 - Do not sound forced or interview-like.
@@ -773,8 +790,10 @@ def repair_reply_if_needed(user_message: str, reply: str) -> str:
         }
     ]
 
-    repaired = deepseek_chat(messages, temperature=0.6, max_tokens=80)
-    return truncate_for_sms(repaired, MAX_REPLY_CHARS)
+    repaired = deepseek_chat(messages, temperature=0.6, max_tokens=150)
+    # Length is enforced by the caller's shorten/truncate pipeline so we don't
+    # hard-cut a freshly repaired reply here (that reintroduced mid-sentence cutoffs).
+    return (repaired or "").strip() or reply
 
 
 def get_ai_reply(phone_number: str, user_message: str) -> str:
@@ -786,12 +805,18 @@ def get_ai_reply(phone_number: str, user_message: str) -> str:
         messages,
         temperature=0.95,
         presence_penalty=0.3,
-        max_tokens=180,
+        max_tokens=220,
     )
-    reply = truncate_for_sms(reply, MAX_REPLY_CHARS)
+
+    # 1) Optionally repair dead-end replies (may lengthen / add a hook).
+    reply = repair_reply_if_needed(user_message, reply)
+
+    # 2) If it's over the limit, have the model rewrite it into a COMPLETE,
+    #    shorter message. This is the primary length control.
     reply = shorten_reply_if_needed(reply, MAX_REPLY_CHARS)
 
-    reply = repair_reply_if_needed(user_message, reply)
+    # 3) Guaranteed hard ceiling: this can never return more than MAX_REPLY_CHARS,
+    #    preferring a clean sentence boundary. A compliant reply passes untouched.
     reply = truncate_for_sms(reply, MAX_REPLY_CHARS)
 
     print(f"SAVING ASSISTANT MESSAGE for {phone_number}: {reply}")
@@ -837,7 +862,8 @@ def generate_followup_message(phone_number: str, followup_payload) -> str | None
         }
     ]
 
-    followup = deepseek_chat(messages, temperature=0.95, max_tokens=180).strip()
+    followup = deepseek_chat(messages, temperature=0.95, max_tokens=220).strip()
+    followup = shorten_reply_if_needed(followup, MAX_FOLLOWUP_CHARS)
     return truncate_for_sms(followup, MAX_FOLLOWUP_CHARS)
 
 
